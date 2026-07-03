@@ -488,7 +488,7 @@ async function renderLeft() {
     const items = await Promise.all(filtered.map(async f => {
         let sub = currentTab==="friends" ? t("idLabel")+f.id : "";
         if (currentTab==="chats") {
-            try {
+            try { document.querySelector(".app-shell")?.classList.remove("chat-open");
                 const key = chatKey(ME.id, f.id);
                 const msgsSnap = await new Promise(resolve => {
                     const q = fbQuery(fbCollection(db,"chats",key,"messages"), fbOrderBy("ts","desc"));
@@ -570,7 +570,7 @@ window.openChat = async function(friendId) {
     $("msgInput")?.focus();
     renderLeft();
 };
-
+document.querySelector(".app-shell")?.classList.add("chat-open");
 function renderMessages(msgs) {
     const container = $("chatMessages");
     if (!container) return;
