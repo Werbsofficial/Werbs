@@ -489,7 +489,6 @@ async function renderLeft() {
         let sub = currentTab==="friends" ? t("idLabel")+f.id : "";
         if (currentTab==="chats") {
             try { 
-                document.querySelector(".app-shell")?.classList.remove("chat-open");
                 const key = chatKey(ME.id, f.id);
                 const msgsSnap = await new Promise(resolve => {
                     const q = fbQuery(fbCollection(db,"chats",key,"messages"), fbOrderBy("ts","desc"));
