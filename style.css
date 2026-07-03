@@ -1075,3 +1075,47 @@ body.auth-page {
     margin-top: 4px;
 }
 .go-to-shop-btn:hover { opacity: 0.88; }
+
+
+@media (max-width: 768px) {
+    .app-shell {
+        grid-template-columns: 56px 1fr;
+    }
+    .conversation-panel {
+        display: none;
+    }
+    .app-shell.chat-open .chat-panel {
+        display: none;
+    }
+    .app-shell.chat-open .conversation-panel {
+        display: flex;
+        grid-column: 2;
+    }
+    .chat-panel {
+        min-width: 0;
+    }
+    .modal-box {
+        width: 95vw;
+        max-width: 95vw;
+    }
+    .shop-box {
+        width: 95vw;
+    }
+    .sidebar-icon {
+        width: 40px;
+        height: 40px;
+        font-size: 18px;
+    }
+}
+
+@media (max-width: 480px) {
+    .app-shell {
+        grid-template-columns: 48px 1fr;
+    }
+    .friend-nick {
+        font-size: 13px;
+    }
+    .friend-sub {
+        font-size: 11px;
+    }
+}
