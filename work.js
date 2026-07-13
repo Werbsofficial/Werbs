@@ -62,6 +62,34 @@ let currentTab   = "chats";
 //  УТИЛИТЫ
 // ─────────────────────────────────────────────
 const $ = id => document.getElementById(id);
+
+// ─── СЕССИЯ: не выходить из аккаунта 30 минут после закрытия вкладки ───
+// localStorage переживает закрытие вкладки (в отличие от sessionStorage),
+// поэтому храним время истечения рядом и сами проверяем "протухла" ли сессия.
+const SESSION_TTL_MS = 30 * 60 * 1000; // 30 минут
+
+function saveSession(user) {
+    localStorage.setItem("w_me", JSON.stringify(user));
+    localStorage.setItem("w_me_exp", String(Date.now() + SESSION_TTL_MS));
+}
+function loadSession() {
+    const stored = localStorage.getItem("w_me");
+    const exp = Number(localStorage.getItem("w_me_exp") || 0);
+    if (!stored || !exp || Date.now() > exp) {
+        localStorage.removeItem("w_me");
+        localStorage.removeItem("w_me_exp");
+        return null;
+    }
+    try {
+        const user = JSON.parse(stored);
+        localStorage.setItem("w_me_exp", String(Date.now() + SESSION_TTL_MS)); // продлеваем на ещё 30 мин при активности
+        return user;
+    } catch(e) { return null; }
+}
+function clearSession() {
+    localStorage.removeItem("w_me");
+    localStorage.removeItem("w_me_exp");
+}
 const escHtml = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 const fmtTime = ts => { const d = ts?.toDate ? ts.toDate() : new Date(ts); return d.getHours().toString().padStart(2,"0")+":"+d.getMinutes().toString().padStart(2,"0"); };
 const fmtSize = b => !b ? "" : b<1024 ? b+" B" : b<1048576 ? (b/1024).toFixed(1)+" KB" : (b/1048576).toFixed(1)+" MB";
@@ -175,6 +203,15 @@ function chatKey(a, b) { return [a,b].sort().join("_"); }
 // ─────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
 
+    // Если уже есть активная сессия (не старше 30 мин с последнего визита) —
+    // сразу открываем чат, минуя приветствие/вход/регистрацию.
+    // (но не трогаем страницы "О нас"/политика — их можно смотреть и будучи в системе)
+    const isEntryPage = document.body.classList.contains("auth-page") || document.querySelector(".welcome");
+    if (isEntryPage && loadSession()) {
+        navigateTo("app.html");
+        return;
+    }
+
     // Перевод применяется сразу на любой странице
     applyTranslations();
 
@@ -266,7 +303,7 @@ function initRegister(form) {
             await fbSetDoc(fbDoc(db,"meta","usedIds"), { ids: [...usedIds, newId] });
             await fbSetDoc(fbDoc(db,"meta","userCounter"), { count: newCount });
 
-            sessionStorage.setItem("w_me", JSON.stringify(user));
+            saveSession(user);
             navigateTo("app.html");
         } catch(err) {
             setErr(t("errGeneric")+err.message);
@@ -419,7 +456,7 @@ function initLogin(form) {
             const user = snap.docs[0].data();
             if (user.lang) setLang(user.lang);
 
-            sessionStorage.setItem("w_me", JSON.stringify(user));
+            saveSession(user);
             navigateTo("app.html");
         } catch(err) {
             setErr(t("errGeneric")+err.message);
@@ -432,13 +469,13 @@ function initLogin(form) {
 //  APP — ИНИЦИАЛИЗАЦИЯ
 // ─────────────────────────────────────────────
 async function initApp() {
-    const stored = sessionStorage.getItem("w_me");
+    const stored = loadSession();
     if (!stored) { navigateTo("login.html"); return; }
-    ME = JSON.parse(stored);
+    ME = stored;
 
     try {
         const snap = await fbGetDoc(fbDoc(db,"users",ME.id));
-        if (snap.exists()) { ME = snap.data(); sessionStorage.setItem("w_me", JSON.stringify(ME)); }
+        if (snap.exists()) { ME = snap.data(); saveSession(ME); }
     } catch(e) {}
 
     // Применяем язык пользователя ко всему приложению
@@ -455,7 +492,7 @@ async function initApp() {
     fbOnSnapshot(fbDoc(db,"users",ME.id), snap => {
         if (!snap.exists()) return;
         ME = snap.data();
-        sessionStorage.setItem("w_me", JSON.stringify(ME));
+        saveSession(ME);
         renderLeft();
     });
 }
@@ -488,7 +525,7 @@ async function grantCreatorPerksIfNeeded() {
         await fbUpdateDoc(fbDoc(db,"users",ME.id), { badges: newBadges, timeSeconds: newSeconds });
         ME.badges = newBadges;
         ME.timeSeconds = newSeconds;
-        sessionStorage.setItem("w_me", JSON.stringify(ME));
+        saveSession(ME);
     } catch(e) {}
 }
 // ─────────────────────────────────────────────
@@ -517,7 +554,7 @@ function startTimeTracking() {
                 const newSeconds = currentSeconds + toAdd;
                 await fbUpdateDoc(fbDoc(db,"users",ME.id), { timeSeconds: newSeconds });
                 ME.timeSeconds = newSeconds;
-                sessionStorage.setItem("w_me", JSON.stringify(ME));
+                saveSession(ME);
             } catch(e) {}
         }
     }, 1000);
@@ -695,22 +732,40 @@ function buildBadgesHtml(badges, size) {
 }
 
 // ─── ОНЛАЙН-СТАТУС ───
+// Если "пульс" (ts) не обновлялся дольше этого времени — считаем человека не в сети,
+// даже если поле online=true всё ещё стоит (вкладка могла закрыться без beforeunload —
+// на телефонах и при обрыве связи это событие часто не срабатывает).
+const PRESENCE_STALE_MS = 90 * 1000;
+function isPresenceOnline(data) {
+    return !!(data && data.online === true && data.ts && (Date.now() - data.ts) < PRESENCE_STALE_MS);
+}
+
 let onlineUnsub = null;
+let onlineStaleTimer = null;
 function watchFriendOnline(friendId) {
     if (onlineUnsub) { onlineUnsub(); onlineUnsub=null; }
-    onlineUnsub = fbOnSnapshot(fbDoc(db,"presence",friendId), snap => {
+    if (onlineStaleTimer) { clearInterval(onlineStaleTimer); onlineStaleTimer=null; }
+
+    let lastData = null;
+    const apply = () => {
         const dot = $("friendOnlineDot");
         const sub = $("chatHeaderSub");
         if (!dot) return;
-        const isOnline = snap.exists() && snap.data().online === true;
-        if (isOnline) {
+        if (isPresenceOnline(lastData)) {
             dot.classList.remove("hidden");
             if (sub) sub.textContent = getLang()==="en" ? "Online" : "В сети";
         } else {
             dot.classList.add("hidden");
             if (sub && activeChatId) sub.textContent = t("idLabel")+friendId;
         }
+    };
+
+    onlineUnsub = fbOnSnapshot(fbDoc(db,"presence",friendId), snap => {
+        lastData = snap.exists() ? snap.data() : null;
+        apply();
     });
+    // Перепроверяем "протухание" даже если новых записей от собеседника не было
+    onlineStaleTimer = setInterval(apply, 30000);
 }
 
 // Обновлять свой онлайн-статус
@@ -1012,7 +1067,7 @@ window.openProfile = function() {
             setAvatarDisplay(dataUrl, img, placeholder);
             localStorage.setItem("w_av_"+ME.id, dataUrl); // локальный кэш для мгновенного отображения
             ME.avatar = dataUrl;
-            sessionStorage.setItem("w_me", JSON.stringify(ME));
+            saveSession(ME);
             updateSidebarAvatar(); // обновить сайдбар сразу после смены
             renderLeft();
             await fbUpdateDoc(fbDoc(db,"users",ME.id), { avatar: dataUrl }); // синхронизация на все устройства
@@ -1041,7 +1096,7 @@ window.toggleProfileLang = async function() {
     try {
         await fbUpdateDoc(fbDoc(db,"users",ME.id), { lang: newLang });
         ME.lang = newLang;
-        sessionStorage.setItem("w_me", JSON.stringify(ME));
+        saveSession(ME);
     } catch(err) {}
 
     window.switchTab(currentTab);
@@ -1199,7 +1254,7 @@ window.acceptRequest = async function(docId, fromId) {
         await fbUpdateDoc(fbDoc(db,"users",ME.id),   { friends: fbArrayUnion(fromId) });
         await fbUpdateDoc(fbDoc(db,"users",fromId),  { friends: fbArrayUnion(ME.id)  });
         ME.friends = [...(ME.friends||[]), fromId];
-        sessionStorage.setItem("w_me", JSON.stringify(ME));
+        saveSession(ME);
         renderLeft();
         openRequests();
     } catch(e) {}
@@ -1229,7 +1284,7 @@ window.openUserProfile = async function(userId) {
     const isMe = userId === ME.id;
 
     const onlineSnap = await fbGetDoc(fbDoc(db,"presence",userId));
-    const isOnline = onlineSnap.exists() && onlineSnap.data().online === true;
+    const isOnline = isPresenceOnline(onlineSnap.exists() ? onlineSnap.data() : null);
     const onlineBadge = isOnline ? `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#22c55e;margin-right:4px"></span>${getLang()==="en"?"Online":"В сети"}` : (getLang()==="en"?"Offline":"Не в сети");
 
     // Применённый фон
@@ -1258,7 +1313,7 @@ window.removeFriend = async function(userId) {
         await fbUpdateDoc(fbDoc(db,"users",ME.id),   { friends: arrayRemove(userId) });
         await fbUpdateDoc(fbDoc(db,"users",userId),  { friends: arrayRemove(ME.id)  });
         ME.friends = (ME.friends||[]).filter(f=>f!==userId);
-        sessionStorage.setItem("w_me", JSON.stringify(ME));
+        saveSession(ME);
         closeUserProfile();
         renderLeft();
     } catch(e) {}
@@ -1302,7 +1357,7 @@ window.closeLogoutModal = function() {
 
 window.confirmLogout = function() {
     if (chatUnsub) chatUnsub();
-    sessionStorage.removeItem("w_me");
+    clearSession();
     navigateTo("index.html");
 };
 
@@ -1344,7 +1399,7 @@ window.submitChangePassword = async function() {
     try {
         await fbUpdateDoc(fbDoc(db,"users",ME.id), { pass: newPass });
         ME.pass = newPass;
-        sessionStorage.setItem("w_me", JSON.stringify(ME));
+        saveSession(ME);
         msgEl.className = "modal-msg success";
         msgEl.textContent = "✅ Пароль изменён!";
         setTimeout(() => { closeChangePassword(); btn.textContent = orig; btn.disabled = false; }, 1500);
@@ -1549,7 +1604,7 @@ window.buyItem = async function(itemId) {
         const newOwned = [...owned, itemId];
         await fbUpdateDoc(fbDoc(db,"users",ME.id), { ownedItems: newOwned });
         ME.ownedItems = newOwned;
-        sessionStorage.setItem("w_me", JSON.stringify(ME));
+        saveSession(ME);
         renderShopItems(false);
     } catch(e) {}
 };
@@ -1578,7 +1633,7 @@ window.equipItem = async function(itemId) {
             await fbUpdateDoc(fbDoc(db,"users",ME.id), { equippedBadges: newBadges });
             ME.equippedBadges = newBadges;
         }
-        sessionStorage.setItem("w_me", JSON.stringify(ME));
+        saveSession(ME);
 
         // Перерисовать в инвентаре или магазине
         const invModal = $("inventoryModal");
