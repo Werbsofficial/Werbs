@@ -63,32 +63,17 @@ let currentTab   = "chats";
 // ─────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
-// ─── СЕССИЯ: не выходить из аккаунта 30 минут после закрытия вкладки ───
-// localStorage переживает закрытие вкладки (в отличие от sessionStorage),
-// поэтому храним время истечения рядом и сами проверяем "протухла" ли сессия.
-const SESSION_TTL_MS = 30 * 60 * 1000; // 30 минут
-
+// ─── СЕССИЯ (простая, на время открытой вкладки) ───
 function saveSession(user) {
-    localStorage.setItem("w_me", JSON.stringify(user));
-    localStorage.setItem("w_me_exp", String(Date.now() + SESSION_TTL_MS));
+    sessionStorage.setItem("w_me", JSON.stringify(user));
 }
 function loadSession() {
-    const stored = localStorage.getItem("w_me");
-    const exp = Number(localStorage.getItem("w_me_exp") || 0);
-    if (!stored || !exp || Date.now() > exp) {
-        localStorage.removeItem("w_me");
-        localStorage.removeItem("w_me_exp");
-        return null;
-    }
-    try {
-        const user = JSON.parse(stored);
-        localStorage.setItem("w_me_exp", String(Date.now() + SESSION_TTL_MS)); // продлеваем на ещё 30 мин при активности
-        return user;
-    } catch(e) { return null; }
+    const stored = sessionStorage.getItem("w_me");
+    if (!stored) return null;
+    try { return JSON.parse(stored); } catch(e) { return null; }
 }
 function clearSession() {
-    localStorage.removeItem("w_me");
-    localStorage.removeItem("w_me_exp");
+    sessionStorage.removeItem("w_me");
 }
 const escHtml = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 const fmtTime = ts => { const d = ts?.toDate ? ts.toDate() : new Date(ts); return d.getHours().toString().padStart(2,"0")+":"+d.getMinutes().toString().padStart(2,"0"); };
@@ -202,15 +187,6 @@ function chatKey(a, b) { return [a,b].sort().join("_"); }
 //  ИНИЦИАЛИЗАЦИЯ
 // ─────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
-
-    // Если уже есть активная сессия (не старше 30 мин с последнего визита) —
-    // сразу открываем чат, минуя приветствие/вход/регистрацию.
-    // (но не трогаем страницы "О нас"/политика — их можно смотреть и будучи в системе)
-    const isEntryPage = document.body.classList.contains("auth-page") || document.querySelector(".welcome");
-    if (isEntryPage && loadSession()) {
-        navigateTo("app.html");
-        return;
-    }
 
     // Перевод применяется сразу на любой странице
     applyTranslations();
